@@ -47,3 +47,88 @@
 - **为什么融合？** 展示Nsight指标显示Baseline的Mem throughput频繁触顶，而你的Fused版Compute Throughput占比更高。
 - **瓶颈在哪里？** 即使速度没超过cuBLAS，要能解释原因（例如：cuBLAS针对不同规模有几十种选择逻辑，而你只写了一种通用的Tiling策略）。
 - **硬件特性利用：** “在RTX 4070上，我通过调整BlockSize，确保了最大化L2 Cache的驻留，减少了回写DRAM的频率。”
+
+# RTX 4070 上 4096×4096 FP16 矩阵乘法的高性能 WMMA Kernel 设计规范
+
+本设计面向 NVIDIA RTX 4070 Desktop（Ada Lovelace / sm_89）显卡，目标是高效执行 C = A @ B，其中 A, B, C ∈ ℝ^{4096×4096}，数据类型为 FP16（输入）和 FP32（累加输出）。以下为完整的 tile 分层、资源分配与双缓冲策略。
+
+---
+
+## 一、硬件约束（RTX 4070）
+
+资源 | 值 | 说明
+---|---|---
+SM 数量 | 48 | 并行处理单元
+每 SM Shared Memory | 164 KB | 可配置，建议 ≤128 KB 用于 shared
+每 SM 寄存器总量 | 65,536 × 32-bit | 即 256 KB
+最大线程数/Block | 1024 | 实际受资源限制
+Warp Size | 32 | 固定
+Tensor Core | 第四代 | 支持 FP16 WMMA
+
+---
+
+## 二、Tile 分层设计
+
+采用三层分块策略：
+
+层级 | 尺寸 | 负责者 | 说明
+---|---|---|---
+Global Matrix | 4096×4096 | Grid | 整个问题规模
+Block Tile (C) | 64×64 | Block | 每 block 负责一块输出
+Warp Tile (C) | 16×16 | Warp | 每 warp 负责子块
+K Tile (Shared) | 64 | Block | K 维分块大小
+WMMA Operation | 16×16×16 | Warp | 单次 Tensor Core 指令
+
+- Warp 数/Block：(64/16) × (64/16) = 16 warps
+- 线程数/Block：16 × 32 = 512
+
+---
+
+## 三、Kernel 启动配置
+
+gridDim 设置为 (64, 64)，对应 (4096/64, 4096/64)；blockDim 设置为 512，即每个 block 包含 16 个 warps。启动时调用 kernel<<<gridDim, blockDim>>>(A, B, C, 4096, 4096, 4096)。
+
+---
+
+## 四、Shared Memory 布局（双缓冲）
+
+使用双缓冲机制隐藏全局内存访问延迟。声明两组 shared memory 缓冲区 sA[2][64][64] 和 sB[2][64][64]，分别用于缓存 A 和 B 的分块数据。每组 buffer 大小为 64×64×2 字节（8 KB），双缓冲总占用 32 KB，远低于每 SM 164 KB 的 shared memory 上限。
+
+---
+
+## 五、双缓冲主循环逻辑
+
+主循环按 K_TILE=64 步进遍历 K 维。在每次迭代中，首先异步预取下一个 K-tile 到备用 buffer（若未达边界），然后使用当前 buffer 执行 K_TILE/16 = 4 次 WMMA 操作（每次处理 K=16）。每次 WMMA 由 warp 内 32 线程协作完成，加载对应子块并累加到 accumulator fragment。循环末尾插入 __syncthreads() 确保预取完成后再复用 buffer。
+
+---
+
+## 六、资源占用分析
+
+资源 | 用量 | 是否满足
+---|---|---
+Shared Memory / Block | 32 KB | 是
+Registers / Thread | 约 60 | 是（occupancy 约 50%）
+Threads / Block | 512 | 是
+Blocks / Grid | 64×64 = 4096 | 是（可被调度器有效管理）
+
+---
+
+## 七、关键优化点
+
+1. 向量化加载：使用 half4 提升从 global memory 到 shared memory 的带宽效率。
+2. 协作加载：block 内所有 512 个线程并行协作填充 shared memory，最大化内存吞吐。
+3. K_TILE=64：在 shared memory 容量、数据重用率和计算强度之间取得平衡。
+4. WMMA Shape：固定采用 16×16×16，这是 Ada 架构 FP16 下最通用且高效的配置。
+5. 输出累加：accumulator 使用 float 类型，避免 FP16 累加导致的精度损失。
+
+---
+
+## 八、性能预期
+
+理论 FP16 算力约为 40 TFLOPS；预期实际性能可达 25–35 TFLOPS；完整 GEMM 运行时间估计为 5–8 毫秒（受内存带宽限制）；引入双缓冲相比无缓冲方案可提升性能 15%–25%。
+
+---
+
+## 九、推荐实现路径
+
+首选使用 CUTLASS 库的 Gemm 模块配合其内置的双缓冲 pipeline，以获得接近 cuBLAS 的性能；次选手写 kernel 仅适用于教学目的或需要自定义融合操作（如 fused ReLU）的场景；若无需自定义 epilogue，应优先考虑 cuBLAS。编译时建议使用 nvcc -arch=sm_89 -O3 -use_fast_math 选项。

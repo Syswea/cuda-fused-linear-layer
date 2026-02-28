@@ -44,7 +44,7 @@ message(STATUS "Using cublas: ${CUBLAS_LIB}")
 message(STATUS "Using cudnn:  ${CUDNN_LIB}")
 
 # 8. 定义可执行文件
-set(SOURCES "${SRC_DIR}/main.cu")
+set(SOURCES "${SRC_DIR}/FusedLinearKernel.cu")
 add_executable(cudafused ${SOURCES})
 
 # 9. 链接库
