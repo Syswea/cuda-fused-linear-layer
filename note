@@ -1,0 +1,29 @@
+==================================================
+Device ID: 0 (Tesla T4)
+Compute Capability: 7.5
+==================================================
+[Memory Hierarchy]
+  Total Global Memory:       14912 MB
+  L2 Cache Size:             4 MB
+  Shared Memory per SM:      64 KB
+  Shared Memory per Block:   48 KB
+  Total Constant Memory:     64 KB
+
+[Compute Resources]
+  Multiprocessors (SMs):     40
+  Warp Size:                 32
+  Max Threads per SM:        1024
+  Max Threads per Block:     1024
+  Max Registers per SM:      65536
+  Max Registers per Block:   65536
+
+[Execution Limits]
+  Max Grid Size:             (2147483647, 65535, 65535)
+  Max Block Dimensions:      (1024, 1024, 64)
+
+[Ada/Performance Features]
+  Memory Clock Rate:         5001 MHz
+  Memory Bus Width:          256 bits
+  Asynchronous Engine Count: 3
+  Unified Addressing (UVA):  Yes
+==================================================
