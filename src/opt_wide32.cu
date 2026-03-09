@@ -55,32 +55,31 @@ __global__ void wmma_gemm(half *A, half *B, float *C, int M, int N, int K) {
     wmma::fragment<wmma::accumulator, 16, 16, 16, float> c_frag;
 
     //清空C tile
-    if (threadIdx == 0)
-        for (size_t i = 0; i < WMMA_M; i ++ ) {
-            for (size_t j = 0; j < WMMA_N; j ++ ) {
-                c[i][j] = static_cast<half>(0.0f);
-            }
-        }
+    for (int i = threadIdx.x; i < WMMA_M * WMMA_K; i += 32) {
+        int row = i / WMMA_K;
+        int col = i % WMMA_K;
+        c[row][col] = static_cast<float>(0.0f);
+    }
+    __syncthreads();
 
     // 4. 沿着 K 维度滑动窗口，每次取 WMMA_K (16) 长度进行内积累加
     for (size_t warpK = 0; warpK < K; warpK += WMMA_K) {
         //读取A tile
-        if (threadIdx == 0)
-            for (size_t i = 0; i < WMMA_M; i ++ ) {
-                for (size_t j = 0; j < WMMA_K; j ++ ) {
-                    size_t gi = warpM + i, gj = warpK + j;
-                    a[i][j] = A[gi * K + gj];
-                }
-            }
+        for (int i = threadIdx.x; i < WMMA_M * WMMA_K; i += 32) {
+            int row = i / WMMA_K;
+            int col = i % WMMA_K;
+            // 计算全局内存索引并赋值
+            a[row][col] = A[(warpM + row) * K + (warpK + col)];
+        }
 
         //读取B tile
-        if (threadIdx == 0)
-            for (size_t i = 0; i < WMMA_K; i ++ ) {
-                for (size_t j = 0; j < WMMA_N; j ++ ) {
-                    size_t gi = warpK + i, gj = warpN + j;
-                    b[i][j] = B[gi * N + gj];
-                }
-            }
+        for (int i = threadIdx.x; i < WMMA_K * WMMA_N; i += 32) {
+            int row = i / WMMA_N;
+            int col = i % WMMA_N;
+            b[row][col] = B[(warpK + row) * N + (warpN + col)];
+        }
+
+        __syncthreads();
 
         for (size_t i = 0; i < 0 + WMMA_M; i += 16) {
             for (size_t j = 0; j < 0 + WMMA_N; j += 16) {
@@ -99,13 +98,13 @@ __global__ void wmma_gemm(half *A, half *B, float *C, int M, int N, int K) {
         __syncthreads();
     }
     
-    if (threadIdx == 0)
-        for (size_t i = 0; i < WMMA_M; i ++ ) {
-            for (size_t j = 0; j < WMMA_N; j ++ ) {
-                size_t gi = warpM + i, gj = warpN + j;
-                C[gi * N + gj] = c[i][j];
-            }
-        }
+    for (int i = threadIdx.x; i < WMMA_K * WMMA_N; i += 32) {
+        int row = i / WMMA_N;
+        int col = i % WMMA_N;
+        C[(warpM + row) * N + (warpN + col)] = c[row][col];
+    }
+
+    __syncthreads();
 }
 
 int main() {
